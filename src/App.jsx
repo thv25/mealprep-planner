@@ -37,6 +37,46 @@ const VIBES = [
   { id: "plants", label: "Plants", icon: "🌿", color: "#059669", examples: "e.g. 'Aloe Vera Good Soup', 'Fern Gully Frittata'" },
 ];
 
+
+const PLANS = {
+  single: { id: "single", label: "Single Plan", price: 5, priceLabel: "$5", desc: "One personalized meal prep plan", icon: "🥗", color: "#1D9E75", bg: "#F0FDF4", border: "#BBF7D0" },
+  monthly: { id: "monthly", label: "Monthly Access", price: 15, priceLabel: "$15/mo", desc: "Up to 5 meal prep plans per month", icon: "⭐", color: "#7C3AED", bg: "#F5F3FF", border: "#DDD6FE" },
+};
+
+const STORAGE_KEY = "mealprep_access";
+
+function getAccess() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    // Check monthly hasn't expired
+    if (data.type === "monthly") {
+      const now = Date.now();
+      if (now > data.expiresAt) { localStorage.removeItem(STORAGE_KEY); return null; }
+    }
+    return data;
+  } catch { return null; }
+}
+
+function saveAccess(type, plansUsed = 0) {
+  const data = {
+    type,
+    plansUsed,
+    purchasedAt: Date.now(),
+    expiresAt: type === "monthly" ? Date.now() + 30 * 24 * 60 * 60 * 1000 : null,
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  return data;
+}
+
+function canGeneratePlan(access) {
+  if (!access) return false;
+  if (access.type === "single") return access.plansUsed < 1;
+  if (access.type === "monthly") return access.plansUsed < 5;
+  return false;
+}
+
 const CUISINE_PROMPTS = {
   mixed: `CUISINE: Deliberately rotate through multiple world cuisines across the week — include dishes from at least 5 different cultures such as Southern soul food, Japanese, Mexican, Italian, Indian, Mediterranean, Thai, Korean, Ethiopian, or Caribbean. Each day should feel like a different part of the world. Name dishes authentically (e.g. "Chicken Tikka Masala", "Shrimp Tacos", "Pasta e Fagioli", "Bibimbap", "Jollof Rice").`,
   soul_food: `CUISINE: Traditional Southern Soul Food. Use authentic dishes — fried chicken, smothered pork chops, catfish, collard greens, black-eyed peas, cornbread, grits, mac and cheese, candied yams, oxtail, red beans and rice, hoppin' john, butter beans, okra, biscuits. Real Southern home cooking. Where a health condition applies, adapt the dish (e.g. baked instead of fried, less sodium) but keep the soul food spirit.`,
@@ -140,7 +180,7 @@ async function callClaude(messages, systemPrompt) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5",
       max_tokens: 4000,
       system: systemPrompt,
       messages,
@@ -167,6 +207,11 @@ export default function MealPrepApp() {
   const [loadingRecipe, setLoadingRecipe] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("Crafting your meal plan…");
   const [error, setError] = useState(null);
+  const [screen2, setScreen2] = useState(null); // 'paywall' overlay
+  const [access, setAccess] = useState(() => getAccess());
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentError, setPaymentError] = useState(null);
+  const [selectedPlan, setSelectedPlan] = useState(null);
 
   const toggleCondition = (id) => {
     setConditions(prev => {
@@ -233,6 +278,12 @@ Rules: vary cuisines across days. Be authentic with dish names. Return ONLY the 
 
       const parsed = parseJSON(text);
       if (!parsed || !Array.isArray(parsed)) throw new Error("Bad format");
+      // Track plan usage
+      const currentAccess = getAccess();
+      if (currentAccess) {
+        const updated = saveAccess(currentAccess.type, (currentAccess.plansUsed || 0) + 1);
+        setAccess(updated);
+      }
       setPlan(parsed);
       setScreen("plan");
     } catch (e) {
@@ -441,7 +492,7 @@ Return ONLY valid JSON (no markdown):
             )}
           </>, "1.5rem")}
 
-          <button onClick={generatePlan} disabled={!days}
+          <button onClick={() => { if (!days) return; const acc = getAccess(); if (acc && canGeneratePlan(acc)) { generatePlan(); } else { setScreen2('paywall'); setPaymentError(null); } }} disabled={!days}
             style={{ width: "100%", padding: "16px", fontSize: 16, fontWeight: 600, borderRadius: 12,
               cursor: days ? "pointer" : "not-allowed",
               background: days ? "#1D9E75" : "#D1D5DB", color: "#fff", border: "none", transition: "background 0.2s" }}>
@@ -708,6 +759,134 @@ Return ONLY valid JSON (no markdown):
               Could not load recipe. Please go back and try again.
             </div>
           )}
+        </div>
+      )}
+    {/* ── PAYWALL OVERLAY ── */}
+      {screen2 === "paywall" && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+          <div style={{ background: "var(--color-background-primary)", borderRadius: 16, padding: "1.75rem", maxWidth: 420, width: "100%", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+
+            {/* Header */}
+            <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>🥦</div>
+              <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 700 }}>Get Your Meal Plan</h2>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--color-text-secondary)" }}>Choose a plan to generate your personalized {days}-day meal prep</p>
+            </div>
+
+            {/* Plan options */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: "1.25rem" }}>
+              {Object.values(PLANS).map((plan) => (
+                <button key={plan.id} onClick={() => setSelectedPlan(plan.id)}
+                  style={{ padding: "14px 16px", borderRadius: 12, cursor: "pointer", textAlign: "left", transition: "all 0.15s",
+                    background: selectedPlan === plan.id ? plan.bg : "var(--color-background-secondary)",
+                    border: selectedPlan === plan.id ? `2px solid ${plan.color}` : "0.5px solid var(--color-border-secondary)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 24 }}>{plan.icon}</span>
+                      <div>
+                        <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: selectedPlan === plan.id ? plan.color : "var(--color-text-primary)" }}>{plan.label}</p>
+                        <p style={{ margin: 0, fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{plan.desc}</p>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <p style={{ margin: 0, fontSize: 20, fontWeight: 800, color: plan.color }}>{plan.priceLabel}</p>
+                      {plan.id === "monthly" && <p style={{ margin: 0, fontSize: 10, color: "var(--color-text-secondary)" }}>billed monthly</p>}
+                      {plan.id === "single" && <p style={{ margin: 0, fontSize: 10, color: "var(--color-text-secondary)" }}>one time</p>}
+                    </div>
+                  </div>
+                  {plan.id === "monthly" && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: `0.5px solid ${plan.border}` }}>
+                      <div style={{ display: "flex", gap: 12 }}>
+                        {["5 plans/month", "All cuisines", "Cancel anytime"].map(f => (
+                          <span key={f} style={{ fontSize: 10, color: plan.color, fontWeight: 500 }}>✓ {f}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Access indicator for existing subscribers */}
+            {access && access.type === "monthly" && (
+              <div style={{ background: "#F0FDF4", border: "0.5px solid #BBF7D0", borderRadius: 8, padding: "8px 12px", marginBottom: "1rem" }}>
+                <p style={{ margin: 0, fontSize: 12, color: "#14532D" }}>
+                  <strong>Active subscription</strong> — {5 - (access.plansUsed || 0)} of 5 plans remaining this month
+                </p>
+              </div>
+            )}
+
+            {paymentError && (
+              <div style={{ background: "#FEF2F2", border: "0.5px solid #FECACA", borderRadius: 8, padding: "10px 12px", marginBottom: "1rem", fontSize: 12, color: "#991B1B" }}>
+                {paymentError}
+              </div>
+            )}
+
+            {/* Square Payment container */}
+            <div id="square-payment-form" style={{ marginBottom: "1rem" }} />
+
+            {/* Pay button */}
+            <button
+              disabled={!selectedPlan || paymentLoading}
+              onClick={async () => {
+                if (!selectedPlan) return;
+                setPaymentLoading(true);
+                setPaymentError(null);
+                try {
+                  // Initialize Square Web Payments SDK
+                  if (!window.Square) throw new Error("Square payments not loaded. Please refresh and try again.");
+                  const payments = window.Square.payments(
+                    import.meta.env.VITE_SQUARE_APP_ID,
+                    import.meta.env.VITE_SQUARE_LOCATION_ID
+                  );
+                  const card = await payments.card();
+                  await card.attach("#square-payment-form");
+                  const result = await card.tokenize();
+                  if (result.status !== "OK") throw new Error("Card details invalid. Please check and try again.");
+
+                  // Send token + plan to our backend
+                  const plan = PLANS[selectedPlan];
+                  const response = await fetch("/api/payment", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      sourceId: result.token,
+                      amount: plan.price * 100, // cents
+                      planType: plan.id,
+                      currency: "USD",
+                    }),
+                  });
+                  const data = await response.json();
+                  if (!response.ok || data.error) throw new Error(data.error || "Payment failed. Please try again.");
+
+                  // Save access and proceed
+                  const newAccess = saveAccess(plan.id, 0);
+                  setAccess(newAccess);
+                  setScreen2(null);
+                  generatePlan();
+                } catch (err) {
+                  setPaymentError(err.message || "Payment failed. Please try again.");
+                } finally {
+                  setPaymentLoading(false);
+                }
+              }}
+              style={{ width: "100%", padding: "14px", fontSize: 15, fontWeight: 700, borderRadius: 12, border: "none",
+                cursor: selectedPlan && !paymentLoading ? "pointer" : "not-allowed",
+                background: selectedPlan ? (PLANS[selectedPlan]?.color || "#1D9E75") : "#D1D5DB",
+                color: "#fff", transition: "all 0.2s" }}>
+              {paymentLoading ? "Processing…" : selectedPlan ? `Pay ${PLANS[selectedPlan]?.priceLabel} & Generate Plan` : "Select a plan above"}
+            </button>
+
+            {/* Cancel */}
+            <button onClick={() => { setScreen2(null); setSelectedPlan(null); setPaymentError(null); }}
+              style={{ width: "100%", marginTop: 10, padding: "10px", fontSize: 13, background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)" }}>
+              Cancel
+            </button>
+
+            <p style={{ margin: "12px 0 0", fontSize: 11, color: "var(--color-text-secondary)", textAlign: "center" }}>
+              🔒 Payments secured by Square. We never store your card details.
+            </p>
+          </div>
         </div>
       )}
     </div>
