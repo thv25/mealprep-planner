@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const HEALTH_CONDITIONS = [
   { id: "none", label: "No restrictions", icon: "🥗" },
@@ -212,6 +212,43 @@ export default function MealPrepApp() {
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentError, setPaymentError] = useState(null);
   const [selectedPlan, setSelectedPlan] = useState(null);
+  const squareCardRef = useRef(null);
+  const squarePaymentsRef = useRef(null);
+
+  // Initialize Square card form when paywall opens
+  useEffect(() => {
+    if (screen2 !== "paywall") {
+      // Cleanup card when paywall closes
+      if (squareCardRef.current) {
+        squareCardRef.current.destroy().catch(() => {});
+        squareCardRef.current = null;
+      }
+      return;
+    }
+    async function initSquare() {
+      try {
+        if (!window.Square) throw new Error("Square not loaded");
+        if (squareCardRef.current) {
+          await squareCardRef.current.destroy().catch(() => {});
+          squareCardRef.current = null;
+        }
+        const payments = window.Square.payments(
+          import.meta.env.VITE_SQUARE_APP_ID,
+          import.meta.env.VITE_SQUARE_LOCATION_ID
+        );
+        squarePaymentsRef.current = payments;
+        const card = await payments.card();
+        await card.attach("#square-payment-form");
+        squareCardRef.current = card;
+      } catch (err) {
+        console.error("Square init error:", err);
+        setPaymentError("Could not load payment form. Please refresh and try again.");
+      }
+    }
+    // Small delay to ensure DOM is ready
+    const timer = setTimeout(initSquare, 300);
+    return () => clearTimeout(timer);
+  }, [screen2]);
 
   const toggleCondition = (id) => {
     setConditions(prev => {
@@ -833,16 +870,12 @@ Return ONLY valid JSON (no markdown):
                 setPaymentLoading(true);
                 setPaymentError(null);
                 try {
-                  // Initialize Square Web Payments SDK
-                  if (!window.Square) throw new Error("Square payments not loaded. Please refresh and try again.");
-                  const payments = window.Square.payments(
-                    import.meta.env.VITE_SQUARE_APP_ID,
-                    import.meta.env.VITE_SQUARE_LOCATION_ID
-                  );
-                  const card = await payments.card();
-                  await card.attach("#square-payment-form");
-                  const result = await card.tokenize();
-                  if (result.status !== "OK") throw new Error("Card details invalid. Please check and try again.");
+                  if (!squareCardRef.current) throw new Error("Payment form not ready. Please refresh and try again.");
+                  const result = await squareCardRef.current.tokenize();
+                  if (result.status !== "OK") {
+                    const errMsg = result.errors?.[0]?.message || "Card details invalid. Please check and try again.";
+                    throw new Error(errMsg);
+                  }
 
                   // Send token + plan to our backend
                   const plan = PLANS[selectedPlan];
